@@ -1,0 +1,12 @@
+city: dallas
+zoom: 16
+bounding_box: -97.54211,32.3612,-96.405013,33.39016
+central_x: 15118
+central_y: 26438
+    
+layers_calculate:
+    - landuse
+    - traffic
+    - buildings
+    - places
+    - water

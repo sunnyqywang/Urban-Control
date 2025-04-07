@@ -1,0 +1,12 @@
+city: la
+zoom: 16
+bounding_box: -118.66888,33.454344,-117.663555,34.33892
+central_x: 11245
+central_y: 26175
+
+layers_calculate:
+    - landuse
+    - traffic
+    - buildings
+    - places
+    - water
