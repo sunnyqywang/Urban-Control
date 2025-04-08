@@ -1,0 +1,12 @@
+.vscode/
+logs/
+**/__pycache__
+.DS_Store
+*.csv
+*.log
+.env
+data/
+models/
+tmp/
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
