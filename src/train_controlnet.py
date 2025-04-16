@@ -57,7 +57,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from src.utils_io import save_args_to_yaml
+from utils_io import save_args_to_yaml
 
 if is_wandb_available():
     import wandb
@@ -87,6 +87,13 @@ def center_crop_np(img_array, target_size=192):
     
     return img_array[start_h:start_h+target_size, start_w:start_w+target_size]
 
+def get_control_image_processor(resolution):
+    return transforms.Compose([
+        transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(resolution),
+        transforms.ToTensor(),
+    ])
+
 def log_validation(
     vae, text_encoder, tokenizer, unet, controlnet, args, accelerator, weight_dtype, step, is_final_validation=False
 ):
@@ -95,7 +102,7 @@ def log_validation(
     if not is_final_validation:
         controlnet = accelerator.unwrap_model(controlnet)
     else:
-        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
+        controlnet = ControlNetModel.from_pretrained(f"{args.output_dir}/controlnet", torch_dtype=weight_dtype)
 
     pipeline = StableDiffusionControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -137,16 +144,20 @@ def log_validation(
 
     image_logs = []
     inference_ctx = contextlib.nullcontext() if is_final_validation else torch.autocast("cuda")
+    processor = get_control_image_processor(args.resolution)
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
         validation_image = Image.open(validation_image).convert("RGB")
+        validation_tensor = processor(validation_image).unsqueeze(0).to(accelerator.device, dtype=weight_dtype)
 
         images = []
-
         for _ in range(args.num_validation_images):
             with inference_ctx:
                 image = pipeline(
-                    validation_prompt, validation_image, num_inference_steps=20, generator=generator
+                    prompt=validation_prompt, 
+                    image=validation_tensor, 
+                    num_inference_steps=20, 
+                    generator=generator
                 ).images[0]
 
             images.append(image)
@@ -1121,8 +1132,6 @@ def main(args):
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):    
-            if step == 3:
-                return batch
             with accelerator.accumulate(controlnet):
                 # Convert images to latent space
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
