@@ -27,6 +27,8 @@ import accelerate
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torchvision.transforms import functional as vision_functional
+
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
@@ -55,6 +57,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
+from src.utils_io import save_args_to_yaml
 
 if is_wandb_available():
     import wandb
@@ -75,6 +78,14 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
+def center_crop_np(img_array, target_size=192):
+    
+    """Center crop numpy array image to target size"""
+    h, w = img_array.shape[:2]
+    start_h = (h - target_size) // 2
+    start_w = (w - target_size) // 2
+    
+    return img_array[start_h:start_h+target_size, start_w:start_w+target_size]
 
 def log_validation(
     vae, text_encoder, tokenizer, unet, controlnet, args, accelerator, weight_dtype, step, is_final_validation=False
@@ -151,9 +162,9 @@ def log_validation(
                 images = log["images"]
                 validation_prompt = log["validation_prompt"]
                 validation_image = log["validation_image"]
-
-                formatted_images = [np.asarray(validation_image)]
-
+                validation_image = center_crop_np(np.asarray(validation_image))
+                formatted_images = [validation_image]
+                
                 for image in images:
                     formatted_images.append(np.asarray(image))
 
@@ -482,6 +493,17 @@ def parse_args(input_args=None):
             " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
         ),
     )
+    
+    parser.add_argument(
+        "--validation_data_dir",
+        type=str,
+        default=None,
+        help=(
+            "A folder containing the validation data. Folder contents must follow the structure described in"
+            " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
+            " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
+        ),
+    )
     parser.add_argument(
         "--image_column", type=str, default="image", help="The column of the dataset containing the target image."
     )
@@ -598,120 +620,120 @@ def parse_args(input_args=None):
     return args
 
 
-def make_train_dataset(args, tokenizer, accelerator):
-    # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
+def make_dataset(args, tokenizer, accelerator, split="train"):
+    from datasets import Dataset
+    import pandas as pd
 
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
+    is_train = split == "train"
+
+    # Load the dataset
     if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
         dataset = load_dataset(
             args.dataset_name,
             args.dataset_config_name,
             cache_dir=args.cache_dir,
-            data_dir=args.train_data_dir,
+            data_dir=args.train_data_dir if is_train else args.validation_data_dir,
         )
     else:
-        if args.train_data_dir is not None:
-            dataset = load_dataset(
-                args.train_data_dir,
-                cache_dir=args.cache_dir,
-            )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
+        data_path = args.train_data_dir if is_train else args.validation_data_dir
+        if data_path is not None:
+            df = pd.read_csv(data_path)
+            dataset = {split: Dataset.from_pandas(df)}
+        else:
+            raise ValueError("Data path not specified for the split.")
 
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
+    column_names = dataset[split].column_names
 
-    # 6. Get the column names for input/target.
-    if args.image_column is None:
-        image_column = column_names[0]
-        logger.info(f"image column defaulting to {image_column}")
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
+    # Column resolution
+    image_column = args.image_column or column_names[0]
+    caption_column = args.caption_column or column_names[1]
+    conditioning_image_column = args.conditioning_image_column or column_names[2]
 
-    if args.caption_column is None:
-        caption_column = column_names[1]
-        logger.info(f"caption column defaulting to {caption_column}")
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
+    for col in [image_column, caption_column, conditioning_image_column]:
+        if col not in column_names:
+            raise ValueError(f"Column `{col}` not found in dataset columns: {column_names}")
 
-    if args.conditioning_image_column is None:
-        conditioning_image_column = column_names[2]
-        logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
-    else:
-        conditioning_image_column = args.conditioning_image_column
-        if conditioning_image_column not in column_names:
-            raise ValueError(
-                f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    def tokenize_captions(examples, is_train=True):
+    def tokenize_captions(examples):
         captions = []
         for caption in examples[caption_column]:
-            if random.random() < args.proportion_empty_prompts:
+            if is_train and random.random() < args.proportion_empty_prompts:
                 captions.append("")
             elif isinstance(caption, str):
                 captions.append(caption)
             elif isinstance(caption, (list, np.ndarray)):
-                # take a random caption if there are multiple
                 captions.append(random.choice(caption) if is_train else caption[0])
             else:
-                raise ValueError(
-                    f"Caption column `{caption_column}` should contain either strings or lists of strings."
-                )
+                raise ValueError(f"Caption column `{caption_column}` should contain strings or lists.")
         inputs = tokenizer(
             captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
         )
         return inputs.input_ids
 
-    image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
+    # Transforms
+    image_transforms = transforms.Compose([
+        transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(args.resolution),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
 
-    conditioning_image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-        ]
-    )
+    image_transforms_90 = transforms.Compose([
+        transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(args.resolution),
+        transforms.Lambda(lambda x: vision_functional.rotate(x, 90)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
 
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        images = [image_transforms(image) for image in images]
+    conditioning_image_transforms = transforms.Compose([
+        transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(args.resolution),
+        transforms.ToTensor(),
+    ])
 
-        conditioning_images = [image.convert("RGB") for image in examples[conditioning_image_column]]
-        conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
+    conditioning_image_transforms_90 = transforms.Compose([
+        transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(args.resolution),
+        transforms.Lambda(lambda x: vision_functional.rotate(x, 90)),
+        transforms.ToTensor(),
+    ])
 
+    def preprocess_fn(examples):
+        if is_train:
+            rotate_random_condition_type = np.array(['base' in condition_path for condition_path in examples[conditioning_image_column]])
+            rotate_random_random_number = (np.random.rand(len(examples[image_column])) > 0.5)
+            rotate_random = rotate_random_condition_type & rotate_random_random_number
+        else:
+            rotate_random = [False] * len(examples[image_column])
+
+        images = [image_transforms_90(Image.open(path).convert("RGB")) 
+                  if rotate 
+                  else image_transforms(Image.open(path).convert("RGB")) 
+                  for path, rotate in zip(examples[image_column], rotate_random)
+                 ]
+
+        cond_images = [conditioning_image_transforms_90(Image.open(path).convert("RGB")) 
+                       if rotate 
+                       else conditioning_image_transforms(Image.open(path).convert("RGB"))
+                       for path, rotate in zip(examples[conditioning_image_column], rotate_random)
+                      ]
+        
         examples["pixel_values"] = images
-        examples["conditioning_pixel_values"] = conditioning_images
+        examples["conditioning_pixel_values"] = cond_images
         examples["input_ids"] = tokenize_captions(examples)
-
+        
         return examples
 
+    # Shuffle and sample
     with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        if is_train and args.max_train_samples is not None:
+            dataset[split] = dataset[split].shuffle(seed=args.seed).select(range(args.max_train_samples))
+        elif not is_train and getattr(args, "max_val_samples", None) is not None:
+            dataset[split] = dataset[split].shuffle(seed=args.seed).select(range(args.max_val_samples))
 
-    return train_dataset
+        dataset_processed = dataset[split].with_transform(preprocess_fn)
+
+    return dataset_processed
 
 
 def collate_fn(examples):
@@ -916,7 +938,7 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    train_dataset = make_train_dataset(args, tokenizer, accelerator)
+    train_dataset = make_dataset(args, tokenizer, accelerator, "train")
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -925,7 +947,17 @@ def main(args):
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
+    
+    val_dataset = make_dataset(args, tokenizer, accelerator, "validation")
 
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        shuffle=False,
+        collate_fn=collate_fn,
+        batch_size=args.train_batch_size,
+        num_workers=args.dataloader_num_workers,
+    )
+    
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -978,6 +1010,65 @@ def main(args):
 
         accelerator.init_trackers(args.tracker_project_name, config=tracker_config)
 
+    @torch.no_grad()
+    def compute_validation_loss(val_dataloader, accelerator, controlnet, unet, vae, text_encoder, noise_scheduler, weight_dtype):
+        controlnet.eval()
+        unet.eval()
+
+        device = accelerator.device  # This is the GPU used by Accelerate
+        total_loss = 0.0
+        total_batches = 0
+
+        for batch in val_dataloader:
+            pixel_values = batch["pixel_values"].to(device=device, dtype=weight_dtype)
+            conditioning_pixel_values = batch["conditioning_pixel_values"].to(device=device, dtype=weight_dtype)
+            input_ids = batch["input_ids"].to(device)
+
+            latents = vae.encode(pixel_values).latent_dist.sample().to(device=device, dtype=weight_dtype)
+            latents = latents * vae.config.scaling_factor
+
+            noise = torch.randn_like(latents)
+            bsz = latents.shape[0]
+            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=device).long()
+
+            noisy_latents = noise_scheduler.add_noise(latents.float(), noise.float(), timesteps).to(dtype=weight_dtype)
+            encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
+
+            down_block_res_samples, mid_block_res_sample = controlnet(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                controlnet_cond=conditioning_pixel_values,
+                return_dict=False,
+            )
+
+            model_pred = unet(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                down_block_additional_residuals=[
+                    sample.to(dtype=weight_dtype) for sample in down_block_res_samples
+                ],
+                mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                return_dict=False,
+            )[0]
+
+            if noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif noise_scheduler.config.prediction_type == "v_prediction":
+                target = noise_scheduler.get_velocity(latents, noise, timesteps)
+            else:
+                raise ValueError("Unknown prediction type")
+
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            total_loss += loss.item()
+            total_batches += 1
+
+        controlnet.train()
+        unet.train()
+        return total_loss / total_batches
+
+
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -1029,7 +1120,9 @@ def main(args):
 
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
-        for step, batch in enumerate(train_dataloader):
+        for step, batch in enumerate(train_dataloader):    
+            if step == 3:
+                return batch
             with accelerator.accumulate(controlnet):
                 # Convert images to latent space
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
@@ -1086,6 +1179,17 @@ def main(args):
                 if accelerator.sync_gradients:
                     params_to_clip = controlnet.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    
+                    
+                if accelerator.sync_gradients and accelerator.is_main_process and global_step % 20 == 0:
+                    total_grad_norm = 0.0
+                    for p in controlnet.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_grad_norm += param_norm.item() ** 2
+                    total_grad_norm = total_grad_norm ** 0.5
+                    accelerator.log({"grad_norm": total_grad_norm}, step=global_step)
+
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
@@ -1133,10 +1237,18 @@ def main(args):
                             weight_dtype,
                             global_step,
                         )
+                        # if global_step % args.validation_steps == 0:
+                        #     val_loss = compute_validation_loss(
+                        #         val_dataloader, accelerator, controlnet, unet, vae, text_encoder, noise_scheduler, weight_dtype
+                        #     )
+                        #     accelerator.log({"validation/loss": val_loss}, step=global_step)
+                        #     logger.info(f"[Validation @ Step {global_step}] Loss: {val_loss:.4f}")
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+                        
+            if global_step % 20 == 0:
+                logs = {"train/loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                progress_bar.set_postfix(**logs)
+                accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
@@ -1182,4 +1294,5 @@ def main(args):
 
 if __name__ == "__main__":
     args = parse_args()
+    save_args_to_yaml(args, 'configs.yaml')
     main(args)

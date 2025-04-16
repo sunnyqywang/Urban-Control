@@ -37,7 +37,7 @@ if __name__ == "__main__":
     
     # Create tile grid
     bbox = [float(x) for x in params['bounding_box'].split(',')]
-    tile_grid = create_tile_grid(bbox, params['zoom'],offset_right, offset_down)
+    tile_grid = create_tile_grid(bbox, params['zoom'], offset_right, offset_down)
 
     # Calculate tile area
     tile_area = calculate_tile_area(params['zoom'], params['central_x'], params['central_y'])

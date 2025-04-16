@@ -1,6 +1,7 @@
 city: chicago
 zoom: 16
 bounding_box: -88.70361,41.30252,-87.52253,42.50043
+city_bounding_box: 
 central_x: 16814
 central_y: 24361
 

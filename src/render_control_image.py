@@ -97,4 +97,4 @@ if __name__ == "__main__":
     with Pool(NUM_WORKERS) as pool:
         pool.map(render_tile, tile_jobs)
 
-    print(f"✅ Done! {len(tile_grid)} tiles saved to:", tile_save_dir)
+    print(f"✅ Done! {len(tile_grid)} tiles saved to:", tile_save_dir, offset_right, offset_down)

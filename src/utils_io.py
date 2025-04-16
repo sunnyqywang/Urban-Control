@@ -8,6 +8,28 @@ import pandas as pd
 import geopandas as gpd
 import fiona
 from shapely.geometry import shape
+from argparse import Namespace
+
+def save_args_to_yaml(input_args, file_path):
+    """
+    Save argparse arguments to a YAML file.
+    
+    Args:
+        input_args (Namespace): Parsed arguments from argparse
+        file_path (str): Path to the YAML file to save
+    """
+    # Convert Namespace to dictionary
+    if isinstance(input_args, Namespace):
+        args_dict = vars(input_args)
+    else:
+        args_dict = input_args  # in case it's already a dictionary
+
+    save_path = os.path.join(input_args.output_dir, file_path)
+    os.makedirs(input_args.output_dir, exist_ok=True)
+
+    # Write to YAML file
+    with open(save_path, 'w') as f:
+        yaml.dump(args_dict, f, default_flow_style=False)
 
 def load_env_variables():
     """

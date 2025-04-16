@@ -1,6 +1,6 @@
 .vscode/
 logs/
-**/__pycache__
+**/__pycache__/
 .DS_Store
 *.csv
 *.log
@@ -10,3 +10,4 @@ models/
 tmp/
 **/.ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
+output/
