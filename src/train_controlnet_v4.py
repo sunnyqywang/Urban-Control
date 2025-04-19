@@ -58,6 +58,8 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
 from utils_io import save_args_to_yaml
+from utils_data import collate_fn_train, make_dataset
+
 
 if is_wandb_available():
     import wandb
@@ -1002,20 +1004,10 @@ def main(args):
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=collate_fn_train,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
-    
-    # val_dataset = make_dataset(args, tokenizer, accelerator, "validation")
-
-    # val_dataloader = torch.utils.data.DataLoader(
-    #     val_dataset,
-    #     shuffle=False,
-    #     collate_fn=collate_fn,
-    #     batch_size=args.train_batch_size,
-    #     num_workers=args.dataloader_num_workers,
-    # )
     
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
