@@ -106,7 +106,7 @@ if __name__ == "__main__":
     parser.add_argument("--run_id", type=str, required=True, help="Path to trained ControlNet run_id")
     parser.add_argument("--data_dir", type=str, required=True, help="Path to validation set")
     parser.add_argument("--num_instances", type=int, required=True, help="Number of pairs to sample and generate")
-    parser.add_argument("--num_images", type=int, default=4)
+    parser.add_argument("--num_images", type=int, default=1)
     parser.add_argument("--num_steps", type=int, default=30)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
@@ -121,7 +121,8 @@ if __name__ == "__main__":
     }[args.dtype]
 
     data = pd.read_csv(args.data_dir)
-    data.sample(args.num_instances)
+    if args.num_instances > 0:
+        data = data.sample(args.num_instances)
 
     directory = f"output/{args.run_id}/"  
 
