@@ -111,7 +111,7 @@ def make_dataset(args, tokenizer, accelerator, split="train"):
             examples["input_ids"] = tokenize_captions(examples)
         else:
             examples["prompt"]= examples[caption_column]
-            examples["name"] = ["_".join(x.split('/')[-3:]) for x in examples[conditioning_image_column]]
+            examples["name"] = ["_".join("_".join(x.split('/')[-5:]).split('_')[3:]) for x in examples[conditioning_image_column]]
         
         return examples
 

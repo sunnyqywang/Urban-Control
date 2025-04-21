@@ -2,18 +2,19 @@
 
 python3 "/home/gridsan/qwang/urban-control/src/train_controlnet_v4.py" \
   --pretrained_model_name_or_path "models/stable-diffusion-v1-5" \
-  --output_dir "output/20250414_v4" \
-  --tracker_project_name "20250414_v4" \
+  --output_dir "output/20250416_v4" \
+  --tracker_project_name "20250416_v4" \
   --seed 42 \
   --num_train_epochs 10 \
   --checkpoints_total_limit 10 \
   --checkpointing_steps 2000 \
+  --resume_from_checkpoint "latest" \
   --gradient_accumulation_steps 4 \
   --learning_rate 1e-5 \
   --lr_scheduler "cosine" \
   --lr_warmup_steps 500 \
   --mixed_precision "fp16" \
-  --train_data_dir "./data/train/20250414_v4_train.csv" \
+  --train_data_dir "./data/train/20250416_v4_train.csv" \
   --validation_steps 300 \
   --image_column "image_column" \
   --conditioning_image_column "conditioning_image_column" \
