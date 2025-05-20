@@ -57,10 +57,12 @@ def run_controlnet_validation(
 
     generator = torch.Generator(device=device).manual_seed(seed)
     images = [control_image, target_image]
+    #negative_prompt = "blurry, distorted buildings, low quality"
     for i in range(num_images):
         with torch.autocast(device_type="cuda" if device.startswith("cuda") else "cpu"):
             image = pipeline(
                 prompt=prompt,
+                #negative_prompt=negative_prompt,
                 image=control_tensor,
                 num_inference_steps=num_steps,
                 generator=generator,
